@@ -1,45 +1,60 @@
-# Nightshade Template
+# glTF Viewer
 
-A template for creating applications with the [Nightshade](https://github.com/matthewjberger/nightshade) game engine.
+A physically-based rendering (PBR) viewer for glTF 2.0 models built with the [Nightshade](https://github.com/matthewjberger/nightshade) game engine.
+
+## Features
+
+- **glTF 2.0 Support**: Load and view `.gltf` and `.glb` files
+- **PBR Rendering**: Physically-based materials with metallic-roughness workflow
+- **HDR Skyboxes**: Load custom `.hdr` environment maps via drag and drop
+- **Auto-Centering**: Models are automatically centered and scaled to fit the viewport
+- **Post Processing**: Bloom and SSAO effects
+- **Color Grading**: Multiple presets and customizable tonemapping
+- **Debug Modes**: PBR debug visualization (base color, normals, metallic, roughness, etc.)
+- **Procedural Atmospheres**: Built-in procedural skybox options
+
+## Usage
+
+### Drag and Drop
+
+- **glTF/GLB files**: Drop a `.gltf` or `.glb` file onto the window to load a new model (replaces current model)
+- **HDR files**: Drop an `.hdr` file to add it as a custom skybox option
+
+### Controls
+
+- **Left Mouse + Drag**: Orbit camera
+- **Right Mouse + Drag**: Pan camera
+- **Scroll Wheel**: Zoom in/out
+- **Arrow Keys**: Cycle through atmospheres
+- **Q / Escape**: Exit
+
+### Settings Panel
+
+- **Skybox**: Select from default HDR, custom HDR skyboxes, or procedural atmospheres
+- **Color Grading**: Adjust tonemap, gamma, saturation, brightness, contrast
+- **Model**: Control rotation speed, reset camera
+- **Post Processing**: Toggle bloom and SSAO with adjustable parameters
+- **Debug**: PBR debug modes, texture stripe visualization, grid toggle
 
 ## Quickstart
 
 ```bash
-# native
+# Native
 just run
 
-# wasm (webgpu)
+# WASM (WebGPU)
 just run-wasm
 
-# openxr (vr headset)
+# OpenXR (VR headset)
 just run-openxr
 ```
-
-> All chromium-based browsers like Brave, Vivaldi, Chrome, etc support WebGPU.
-> Firefox also [supports WebGPU](https://mozillagfx.wordpress.com/2025/07/15/shipping-webgpu-on-windows-in-firefox-141/) now starting with version `141`.
 
 ## Prerequisites
 
 * [just](https://github.com/casey/just)
 * [trunk](https://trunkrs.dev/) (for web builds)
-* [cross](https://github.com/cross-rs/cross) (for Steam Deck builds)
-  * Requires Docker (macOS/Linux) or Docker Desktop (Windows)
 
 > Run `just` with no arguments to list all commands
-
-## Optional Features
-
-Enable features with `cargo run --features <feature>`:
-
-| Feature | Description | Docs |
-|---------|-------------|------|
-| `plugins` | WASI plugin runtime for modding support | [Plugins](https://github.com/matthewjberger/nightshade/blob/main/docs/PLUGINS.md) |
-| `scripting` | Rhai scripting for runtime script execution | [Scripting](https://github.com/matthewjberger/nightshade/blob/main/docs/SCRIPTING.md) |
-| `tracing` | File logging to `logs/nightshade.log` | [Profiling](https://github.com/matthewjberger/nightshade/blob/main/docs/PROFILING.md) |
-| `openxr` | VR headset support | |
-| `steam` | Steamworks integration | [Steam](https://github.com/matthewjberger/nightshade/blob/main/docs/STEAM.md) |
-
-See also: [Steam Deck Deployment](https://github.com/matthewjberger/nightshade/blob/main/docs/STEAM_DECK.md)
 
 ## License
 

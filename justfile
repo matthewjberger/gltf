@@ -36,6 +36,10 @@ init-wasm:
 lint:
     cargo clippy --all --tests -- -D warnings
 
+# Runs linter for wasm32 target
+lint-wasm:
+    cargo clippy --all --target wasm32-unknown-unknown -- -D warnings
+
 # Runs the app natively
 run:
     cargo run -r
