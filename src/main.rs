@@ -346,6 +346,8 @@ impl State for ViewerState {
                     }
                 });
 
+                self.animation_ui(world, ui);
+
                 ui.collapsing("Post Processing", |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Bloom:");
@@ -463,6 +465,95 @@ impl ViewerState {
             });
     }
 
+    fn animation_ui(&mut self, world: &mut World, ui: &mut egui::Ui) {
+        let animation_entity = self.model_entities.first().copied();
+        let Some(entity) = animation_entity else {
+            return;
+        };
+
+        if !world.entity_has_animation_player(entity) {
+            return;
+        }
+
+        let mut clip_to_play = None;
+
+        ui.collapsing("Animation", |ui| {
+            if let Some(player) = world.get_animation_player_mut(entity) {
+                if player.clips.is_empty() {
+                    ui.label("No animations");
+                    return;
+                }
+
+                ui.horizontal(|ui| {
+                    ui.label("Clip:");
+                    egui::ComboBox::from_id_salt("animation_clip")
+                        .selected_text(
+                            player
+                                .current_clip
+                                .and_then(|index| player.clips.get(index))
+                                .map(|clip| clip.name.as_str())
+                                .unwrap_or("None"),
+                        )
+                        .show_ui(ui, |ui| {
+                            for (index, clip) in player.clips.iter().enumerate() {
+                                let is_selected = player.current_clip == Some(index);
+                                if ui.selectable_label(is_selected, &clip.name).clicked() {
+                                    clip_to_play = Some(index);
+                                }
+                            }
+                        });
+                });
+
+                if let Some(clip_index) = player.current_clip
+                    && let Some(clip) = player.clips.get(clip_index)
+                {
+                    ui.label(format!("Duration: {:.2}s", clip.duration));
+
+                    ui.horizontal(|ui| {
+                        ui.label("Time:");
+                        ui.add(
+                            egui::Slider::new(&mut player.time, 0.0..=clip.duration)
+                                .fixed_decimals(2)
+                                .suffix("s"),
+                        );
+                    });
+                }
+
+                ui.horizontal(|ui| {
+                    ui.label("Speed:");
+                    ui.add(
+                        egui::DragValue::new(&mut player.speed)
+                            .speed(0.1)
+                            .range(-5.0..=5.0)
+                            .fixed_decimals(1),
+                    );
+                });
+
+                ui.checkbox(&mut player.looping, "Loop");
+
+                ui.horizontal(|ui| {
+                    if player.playing {
+                        if ui.button("Pause").clicked() {
+                            player.pause();
+                        }
+                    } else if ui.button("Play").clicked() {
+                        player.resume();
+                    }
+
+                    if ui.button("Stop").clicked() {
+                        player.stop();
+                    }
+                });
+            }
+        });
+
+        if let Some(index) = clip_to_play
+            && let Some(player) = world.get_animation_player_mut(entity)
+        {
+            player.play(index);
+        }
+    }
+
     fn atmosphere_switch_system(&mut self, world: &mut World) {
         let right_pressed = world
             .resources
@@ -563,9 +654,11 @@ impl ViewerState {
         }
 
         for prefab in result.prefabs {
-            let entity = nightshade::ecs::prefab::spawn_prefab(
+            let entity = nightshade::ecs::prefab::spawn_prefab_with_skins(
                 world,
                 &prefab,
+                &result.animations,
+                &result.skins,
                 nalgebra_glm::vec3(0.0, 0.0, 0.0),
             );
             self.model_entities.push(entity);

@@ -5,6 +5,7 @@ A physically-based rendering (PBR) viewer for glTF 2.0 models built with the [Ni
 ## Features
 
 - **glTF 2.0 Support**: Load and view `.gltf` and `.glb` files
+- **Animation Playback**: Play, pause, and scrub through skeletal animations
 - **PBR Rendering**: Physically-based materials with metallic-roughness workflow
 - **HDR Skyboxes**: Load custom `.hdr` environment maps via drag and drop
 - **Auto-Centering**: Models are automatically centered and scaled to fit the viewport
@@ -33,6 +34,7 @@ A physically-based rendering (PBR) viewer for glTF 2.0 models built with the [Ni
 - **Skybox**: Select from default HDR, custom HDR skyboxes, or procedural atmospheres
 - **Color Grading**: Adjust tonemap, gamma, saturation, brightness, contrast
 - **Model**: Control rotation speed, reset camera
+- **Animation**: Select clips, play/pause, adjust speed, scrub timeline, toggle looping
 - **Post Processing**: Toggle bloom and SSAO with adjustable parameters
 - **Debug**: PBR debug modes, texture stripe visualization, grid toggle
 
