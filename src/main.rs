@@ -20,6 +20,67 @@ struct CustomSkybox {
     path: PathBuf,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssetType {
+    Model,
+    Animation,
+    Skybox,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl AssetType {
+    fn from_extension(extension: &str) -> Option<Self> {
+        match extension.to_lowercase().as_str() {
+            "gltf" | "glb" => Some(AssetType::Model),
+            "fbx" => Some(AssetType::Animation),
+            "hdr" => Some(AssetType::Skybox),
+            _ => None,
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            AssetType::Model => "Model",
+            AssetType::Animation => "Animation",
+            AssetType::Skybox => "Skybox",
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct AssetEntry {
+    path: PathBuf,
+    name: String,
+    asset_type: AssetType,
+    tags: Vec<String>,
+    categories: Vec<String>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct AssetLibrary {
+    entries: Vec<AssetEntry>,
+    search_query: String,
+    filter_type: Option<AssetType>,
+    sort_ascending: bool,
+    show_window: bool,
+    selected_index: Option<usize>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Default for AssetLibrary {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            search_query: String::new(),
+            filter_type: None,
+            sort_ascending: true,
+            show_window: false,
+            selected_index: None,
+        }
+    }
+}
+
 struct ViewerState {
     model_entities: Vec<Entity>,
     camera_entity: Option<Entity>,
@@ -27,11 +88,17 @@ struct ViewerState {
     loaded: bool,
     left_arrow_was_pressed: bool,
     right_arrow_was_pressed: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    up_arrow_was_pressed: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    down_arrow_was_pressed: bool,
     previous_atmosphere: Atmosphere,
     custom_skyboxes: Vec<CustomSkybox>,
     selected_custom_skybox: Option<usize>,
     drag_file_type: Option<String>,
     sun_entity: Option<Entity>,
+    #[cfg(not(target_arch = "wasm32"))]
+    asset_library: AssetLibrary,
 }
 
 impl Default for ViewerState {
@@ -43,11 +110,17 @@ impl Default for ViewerState {
             loaded: false,
             left_arrow_was_pressed: false,
             right_arrow_was_pressed: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            up_arrow_was_pressed: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            down_arrow_was_pressed: false,
             previous_atmosphere: Atmosphere::Hdr,
             custom_skyboxes: Vec::new(),
             selected_custom_skybox: None,
             drag_file_type: None,
             sun_entity: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            asset_library: AssetLibrary::default(),
         }
     }
 }
@@ -143,6 +216,8 @@ impl State for ViewerState {
         escape_key_exit_system(world);
         pan_orbit_camera_system(world);
         self.atmosphere_switch_system(world);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.asset_cycle_system(world);
 
         if self.loaded && self.rotation_speed > 0.0 {
             for entity in &self.model_entities {
@@ -170,6 +245,17 @@ impl State for ViewerState {
             if ext == "fbx" {
                 self.load_fbx_animations(world, path);
             }
+        }
+        self.drag_file_type = None;
+    }
+
+    fn on_dropped_file_data(&mut self, world: &mut World, name: &str, data: &[u8]) {
+        let lower_name = name.to_lowercase();
+        if lower_name.ends_with(".hdr") {
+            self.load_hdr_skybox_from_bytes(world, name, data);
+        } else if lower_name.ends_with(".gltf") || lower_name.ends_with(".glb") {
+            self.clear_scene(world);
+            self.load_gltf_from_bytes(world, data);
         }
         self.drag_file_type = None;
     }
@@ -205,10 +291,21 @@ impl State for ViewerState {
             self.drop_indicator_ui(ui_context);
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
+        self.asset_library_ui(world, ui_context);
+
         egui::Window::new("Settings")
             .default_pos(egui::pos2(10.0, 10.0))
             .default_width(300.0)
             .show(ui_context, |ui| {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    if ui.button("Asset Library").clicked() {
+                        self.asset_library.show_window = true;
+                    }
+                    ui.separator();
+                }
+
                 ui.collapsing("Skybox", |ui| {
                     let current_is_default = self.selected_custom_skybox.is_none()
                         && world.resources.graphics.atmosphere == Atmosphere::Hdr;
@@ -223,6 +320,9 @@ impl State for ViewerState {
                     }
 
                     for (index, skybox) in self.custom_skyboxes.iter().enumerate() {
+                        if skybox.path.as_os_str().is_empty() {
+                            continue;
+                        }
                         let is_selected = self.selected_custom_skybox == Some(index);
                         if ui.selectable_label(is_selected, &skybox.name).clicked() {
                             load_hdr_skybox_from_path(world, skybox.path.clone());
@@ -621,6 +721,63 @@ impl ViewerState {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn asset_cycle_system(&mut self, world: &mut World) {
+        if self.asset_library.entries.is_empty() {
+            return;
+        }
+
+        let up_pressed = world
+            .resources
+            .input
+            .keyboard
+            .is_key_pressed(KeyCode::ArrowUp);
+        let down_pressed = world
+            .resources
+            .input
+            .keyboard
+            .is_key_pressed(KeyCode::ArrowDown);
+
+        let entry_count = self.asset_library.entries.len();
+        let mut new_index = None;
+
+        if down_pressed && !self.down_arrow_was_pressed {
+            new_index = Some(match self.asset_library.selected_index {
+                Some(index) => (index + 1) % entry_count,
+                None => 0,
+            });
+        }
+
+        if up_pressed && !self.up_arrow_was_pressed {
+            new_index = Some(match self.asset_library.selected_index {
+                Some(index) => {
+                    if index == 0 {
+                        entry_count - 1
+                    } else {
+                        index - 1
+                    }
+                }
+                None => entry_count - 1,
+            });
+        }
+
+        self.up_arrow_was_pressed = up_pressed;
+        self.down_arrow_was_pressed = down_pressed;
+
+        if let Some(index) = new_index {
+            self.asset_library.selected_index = Some(index);
+            let entry = &self.asset_library.entries[index];
+            let path = entry.path.clone();
+            let asset_type = entry.asset_type;
+
+            match asset_type {
+                AssetType::Model => self.load_gltf_from_path(world, &path),
+                AssetType::Animation => self.load_fbx_animations(world, &path),
+                AssetType::Skybox => self.load_hdr_skybox(world, &path),
+            }
+        }
+    }
+
     fn load_hdr_skybox(&mut self, world: &mut World, path: &std::path::Path) {
         let name = path
             .file_stem()
@@ -641,6 +798,29 @@ impl ViewerState {
             self.custom_skyboxes.push(CustomSkybox {
                 name,
                 path: path.to_path_buf(),
+            });
+            self.selected_custom_skybox = Some(self.custom_skyboxes.len() - 1);
+        }
+    }
+
+    fn load_hdr_skybox_from_bytes(&mut self, world: &mut World, name: &str, data: &[u8]) {
+        let file_name = std::path::Path::new(name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Custom HDR")
+            .to_string();
+
+        let already_exists = self.custom_skyboxes.iter().position(|s| s.name == file_name);
+
+        load_hdr_skybox(world, data.to_vec());
+        world.resources.graphics.atmosphere = Atmosphere::Hdr;
+
+        if let Some(index) = already_exists {
+            self.selected_custom_skybox = Some(index);
+        } else {
+            self.custom_skyboxes.push(CustomSkybox {
+                name: file_name,
+                path: PathBuf::new(),
             });
             self.selected_custom_skybox = Some(self.custom_skyboxes.len() - 1);
         }
@@ -790,14 +970,321 @@ impl ViewerState {
         if let Some(camera_entity) = self.camera_entity
             && let Some(pan_orbit) = world.get_pan_orbit_camera_mut(camera_entity)
         {
-            pan_orbit.focus = Vec3::new(0.0, 0.0, 0.0);
             pan_orbit.target_focus = Vec3::new(0.0, 0.0, 0.0);
-            pan_orbit.radius = 5.0;
             pan_orbit.target_radius = 5.0;
-            pan_orbit.yaw = 0.0;
             pan_orbit.target_yaw = 0.0;
-            pan_orbit.pitch = 0.3;
             pan_orbit.target_pitch = 0.3;
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn scan_directory(&mut self, path: &std::path::Path) {
+        self.asset_library.entries.clear();
+
+        let mut dir_best_file: std::collections::HashMap<PathBuf, (PathBuf, u8)> =
+            std::collections::HashMap::new();
+
+        for entry in walkdir::WalkDir::new(path)
+            .follow_links(true)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let entry_path = entry.path();
+            if !entry_path.is_file() {
+                continue;
+            }
+
+            let extension = match entry_path.extension().and_then(|e| e.to_str()) {
+                Some(ext) => ext.to_lowercase(),
+                None => continue,
+            };
+
+            if AssetType::from_extension(&extension).is_none() {
+                continue;
+            }
+
+            let priority = match extension.as_str() {
+                "glb" => 3,
+                "gltf" => 2,
+                "fbx" => 1,
+                "hdr" => 3,
+                _ => 0,
+            };
+
+            let parent = entry_path.parent().unwrap_or(path).to_path_buf();
+            let dominated_extension = matches!(extension.as_str(), "glb" | "gltf" | "fbx");
+
+            if dominated_extension {
+                match dir_best_file.get(&parent) {
+                    Some((_, existing_priority)) if *existing_priority >= priority => {}
+                    _ => {
+                        dir_best_file.insert(parent, (entry_path.to_path_buf(), priority));
+                    }
+                }
+            } else {
+                let name = entry_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Unknown")
+                    .to_string();
+
+                let asset_type = AssetType::from_extension(&extension).unwrap();
+                let (display_name, tags, categories) = self
+                    .parse_polyhaven_info(entry_path)
+                    .unwrap_or_else(|| (name.clone(), Vec::new(), Vec::new()));
+
+                self.asset_library.entries.push(AssetEntry {
+                    path: entry_path.to_path_buf(),
+                    name: display_name,
+                    asset_type,
+                    tags,
+                    categories,
+                });
+            }
+        }
+
+        for (_, (file_path, _)) in dir_best_file {
+            let extension = file_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+
+            let asset_type = AssetType::from_extension(&extension).unwrap();
+
+            let name = file_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Unknown")
+                .to_string();
+
+            let (display_name, tags, categories) = self
+                .parse_polyhaven_info(&file_path)
+                .unwrap_or_else(|| (name.clone(), Vec::new(), Vec::new()));
+
+            self.asset_library.entries.push(AssetEntry {
+                path: file_path,
+                name: display_name,
+                asset_type,
+                tags,
+                categories,
+            });
+        }
+
+        if self.asset_library.sort_ascending {
+            self.asset_library
+                .entries
+                .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        } else {
+            self.asset_library
+                .entries
+                .sort_by(|a, b| b.name.to_lowercase().cmp(&a.name.to_lowercase()));
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn parse_polyhaven_info(
+        &self,
+        asset_path: &std::path::Path,
+    ) -> Option<(String, Vec<String>, Vec<String>)> {
+        let parent = asset_path.parent()?;
+        let info_path = parent.join("info.json");
+
+        if !info_path.exists() {
+            return None;
+        }
+
+        let content = std::fs::read_to_string(&info_path).ok()?;
+        let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+        let name = json
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())?;
+
+        let tags = json
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let categories = json
+            .get("categories")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Some((name, tags, categories))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn asset_library_ui(&mut self, world: &mut World, ui_context: &egui::Context) {
+        if !self.asset_library.show_window {
+            return;
+        }
+
+        let mut asset_to_load: Option<(PathBuf, AssetType)> = None;
+        let mut directory_to_scan: Option<PathBuf> = None;
+        let mut should_close = false;
+
+        egui::Window::new("Asset Library")
+            .default_width(400.0)
+            .default_height(500.0)
+            .show(ui_context, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("Scan Directory").clicked()
+                        && let Some(path) = rfd::FileDialog::new().pick_folder()
+                    {
+                        directory_to_scan = Some(path);
+                    }
+
+                    if ui.button("Clear").clicked() {
+                        self.asset_library.entries.clear();
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("X").clicked() {
+                            should_close = true;
+                        }
+                    });
+                });
+
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    ui.label("Search:");
+                    ui.text_edit_singleline(&mut self.asset_library.search_query);
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Filter:");
+                    egui::ComboBox::from_id_salt("asset_type_filter")
+                        .selected_text(
+                            self.asset_library
+                                .filter_type
+                                .map(|t| t.name())
+                                .unwrap_or("All"),
+                        )
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_label(self.asset_library.filter_type.is_none(), "All")
+                                .clicked()
+                            {
+                                self.asset_library.filter_type = None;
+                            }
+                            for asset_type in [AssetType::Model, AssetType::Animation, AssetType::Skybox] {
+                                if ui
+                                    .selectable_label(
+                                        self.asset_library.filter_type == Some(asset_type),
+                                        asset_type.name(),
+                                    )
+                                    .clicked()
+                                {
+                                    self.asset_library.filter_type = Some(asset_type);
+                                }
+                            }
+                        });
+
+                    if ui
+                        .button(if self.asset_library.sort_ascending {
+                            "A-Z"
+                        } else {
+                            "Z-A"
+                        })
+                        .clicked()
+                    {
+                        self.asset_library.sort_ascending = !self.asset_library.sort_ascending;
+                        if self.asset_library.sort_ascending {
+                            self.asset_library.entries.sort_by(|a, b| {
+                                a.name.to_lowercase().cmp(&b.name.to_lowercase())
+                            });
+                        } else {
+                            self.asset_library.entries.sort_by(|a, b| {
+                                b.name.to_lowercase().cmp(&a.name.to_lowercase())
+                            });
+                        }
+                    }
+                });
+
+                ui.separator();
+
+                let search_query_lower = self.asset_library.search_query.to_lowercase();
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for entry in &self.asset_library.entries {
+                        if let Some(filter) = self.asset_library.filter_type
+                            && entry.asset_type != filter
+                        {
+                            continue;
+                        }
+
+                        if !search_query_lower.is_empty() {
+                            let name_matches =
+                                entry.name.to_lowercase().contains(&search_query_lower);
+                            let tag_matches = entry
+                                .tags
+                                .iter()
+                                .any(|t| t.to_lowercase().contains(&search_query_lower));
+                            let category_matches = entry
+                                .categories
+                                .iter()
+                                .any(|c| c.to_lowercase().contains(&search_query_lower));
+
+                            if !name_matches && !tag_matches && !category_matches {
+                                continue;
+                            }
+                        }
+
+                        ui.horizontal(|ui| {
+                            let type_label = match entry.asset_type {
+                                AssetType::Model => "[M]",
+                                AssetType::Animation => "[A]",
+                                AssetType::Skybox => "[S]",
+                            };
+
+                            ui.label(type_label);
+
+                            if ui.button(&entry.name).clicked() {
+                                asset_to_load = Some((entry.path.clone(), entry.asset_type));
+                            }
+                        });
+
+                        if !entry.tags.is_empty() || !entry.categories.is_empty() {
+                            ui.indent(entry.path.to_string_lossy(), |ui| {
+                                if !entry.categories.is_empty() {
+                                    ui.label(format!("Categories: {}", entry.categories.join(", ")));
+                                }
+                                if !entry.tags.is_empty() {
+                                    ui.label(format!("Tags: {}", entry.tags.join(", ")));
+                                }
+                            });
+                        }
+                    }
+                });
+            });
+
+        if should_close {
+            self.asset_library.show_window = false;
+        }
+
+        if let Some(path) = directory_to_scan {
+            self.scan_directory(&path);
+        }
+
+        if let Some((path, asset_type)) = asset_to_load {
+            match asset_type {
+                AssetType::Model => self.load_gltf_from_path(world, &path),
+                AssetType::Animation => self.load_fbx_animations(world, &path),
+                AssetType::Skybox => self.load_hdr_skybox(world, &path),
+            }
         }
     }
 }
