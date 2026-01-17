@@ -1,7 +1,6 @@
 use nightshade::ecs::camera::commands::spawn_pan_orbit_camera;
 use nightshade::ecs::camera::systems::pan_orbit_camera_system;
 use nightshade::ecs::graphics::resources::PbrDebugMode;
-use nightshade::ecs::material::resources::material_registry_insert;
 use nightshade::ecs::prefab::resources::mesh_cache_insert;
 use nightshade::prelude::*;
 use nightshade::render::wgpu::passes;
@@ -119,51 +118,6 @@ impl State for PrefabsState {
 
         self.camera_entity = Some(camera_entity);
         world.resources.active_camera = Some(camera_entity);
-
-        let ground = world.spawn_entities(
-            LOCAL_TRANSFORM
-                | LOCAL_TRANSFORM_DIRTY
-                | GLOBAL_TRANSFORM
-                | RENDER_MESH
-                | MATERIAL_REF
-                | CASTS_SHADOW,
-            1,
-        )[0];
-        world.set_local_transform(
-            ground,
-            LocalTransform {
-                translation: Vec3::new(0.0, -2.0, 0.0),
-                rotation: Quat::identity(),
-                scale: Vec3::new(10.0, 0.1, 10.0),
-            },
-        );
-        world.set_render_mesh(ground, RenderMesh::new("Cube"));
-        let ground_material = format!("Ground_{}", ground.id);
-        material_registry_insert(
-            &mut world.resources.material_registry,
-            ground_material.clone(),
-            Material {
-                base_color: [0.5, 0.5, 0.5, 1.0],
-                roughness: 0.8,
-                metallic: 0.0,
-                ..Default::default()
-            },
-        );
-        if let Some(&index) = world
-            .resources
-            .material_registry
-            .registry
-            .name_to_index
-            .get(&ground_material)
-        {
-            world
-                .resources
-                .material_registry
-                .registry
-                .add_reference(index);
-        }
-        world.set_material_ref(ground, MaterialRef::new(ground_material));
-        world.set_casts_shadow(ground, CastsShadow);
 
         tracing::info!("Loading embedded GLTF model");
         const GLTF_DATA: &[u8] = include_bytes!("../assets/gltf/DamagedHelmet.glb");
