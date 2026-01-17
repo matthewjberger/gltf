@@ -5,7 +5,7 @@ license = "MIT OR Apache-2.0"
 edition = "2024"
 
 [dependencies]
-nightshade = { version = "0.6.61", features = ["egui", "tracing"] }
+nightshade = { version = "0.6.61", features = ["egui", "tracing", "fbx"] }
 
 [features]
 openxr = ["nightshade/openxr"]

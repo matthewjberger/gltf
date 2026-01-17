@@ -166,6 +166,10 @@ impl State for ViewerState {
             } else if ext == "gltf" || ext == "glb" {
                 self.load_gltf_from_path(world, path);
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            if ext == "fbx" {
+                self.load_fbx_animations(world, path);
+            }
         }
         self.drag_file_type = None;
     }
@@ -177,6 +181,15 @@ impl State for ViewerState {
                 self.drag_file_type = Some("HDR".to_string());
             } else if ext == "gltf" || ext == "glb" {
                 self.drag_file_type = Some("glTF".to_string());
+            } else if ext == "fbx" {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.drag_file_type = Some("FBX".to_string());
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    self.drag_file_type = Some("Unsupported".to_string());
+                }
             } else {
                 self.drag_file_type = Some("Unsupported".to_string());
             }
@@ -456,6 +469,9 @@ impl ViewerState {
                             "glTF" => {
                                 ui.heading("Drop glTF/GLB file to load model");
                             }
+                            "FBX" => {
+                                ui.heading("Drop FBX file to add animations");
+                            }
                             _ => {
                                 ui.heading("Unsupported file type");
                             }
@@ -476,13 +492,16 @@ impl ViewerState {
         }
 
         let mut clip_to_play = None;
+        let mut clear_animations = false;
 
         ui.collapsing("Animation", |ui| {
             if let Some(player) = world.get_animation_player_mut(entity) {
                 if player.clips.is_empty() {
-                    ui.label("No animations");
+                    ui.label("No animations (drop FBX to add)");
                     return;
                 }
+
+                ui.label(format!("{} clip(s) loaded", player.clips.len()));
 
                 ui.horizontal(|ui| {
                     ui.label("Clip:");
@@ -544,6 +563,12 @@ impl ViewerState {
                         player.stop();
                     }
                 });
+
+                ui.separator();
+
+                if ui.button("Clear Animations").clicked() {
+                    clear_animations = true;
+                }
             }
         });
 
@@ -551,6 +576,15 @@ impl ViewerState {
             && let Some(player) = world.get_animation_player_mut(entity)
         {
             player.play(index);
+        }
+
+        if clear_animations
+            && let Some(player) = world.get_animation_player_mut(entity)
+        {
+            player.clips.clear();
+            player.current_clip = None;
+            player.playing = false;
+            player.time = 0.0;
         }
     }
 
@@ -631,6 +665,41 @@ impl ViewerState {
             }
             Err(error) => {
                 tracing::error!("Failed to load glTF from bytes: {}", error);
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn load_fbx_animations(&mut self, world: &mut World, path: &std::path::Path) {
+        let Some(entity) = self.model_entities.first().copied() else {
+            tracing::warn!("No model loaded - load a glTF model first before adding FBX animations");
+            return;
+        };
+
+        if !world.entity_has_animation_player(entity) {
+            tracing::warn!("Model does not have an AnimationPlayer component");
+            return;
+        }
+
+        match nightshade::ecs::prefab::import_fbx_from_path(path) {
+            Ok(result) => {
+                if result.animations.is_empty() {
+                    tracing::warn!("No animations found in FBX file");
+                    return;
+                }
+
+                if let Some(player) = world.get_animation_player_mut(entity) {
+                    let count = result.animations.len();
+                    player.add_clips(result.animations);
+                    tracing::info!("Added {} animation(s) from FBX", count);
+
+                    if player.current_clip.is_none() && !player.clips.is_empty() {
+                        player.play(0);
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::error!("Failed to load FBX file: {}", error);
             }
         }
     }

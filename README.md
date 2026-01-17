@@ -19,6 +19,7 @@ A physically-based rendering (PBR) viewer for glTF 2.0 models built with the [Ni
 ### Drag and Drop
 
 - **glTF/GLB files**: Drop a `.gltf` or `.glb` file onto the window to load a new model (replaces current model)
+- **FBX files**: Drop an `.fbx` file to add its animations to the current model (native only)
 - **HDR files**: Drop an `.hdr` file to add it as a custom skybox option
 
 ### Controls
