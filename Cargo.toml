@@ -15,3 +15,6 @@ serde_json = "1"
 
 [features]
 openxr = ["nightshade/openxr"]
+
+[patch.crates-io]
+nightshade = { git = "https://github.com/matthewjberger/nightshade.git", branch = "main" }
