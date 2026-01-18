@@ -2,10 +2,8 @@ use nightshade::ecs::camera::commands::spawn_pan_orbit_camera;
 use nightshade::ecs::camera::systems::pan_orbit_camera_system;
 use nightshade::ecs::graphics::resources::PbrDebugMode;
 use nightshade::ecs::prefab::resources::mesh_cache_insert;
+use nightshade::ecs::text::components::{HudAnchor, TextProperties};
 use nightshade::prelude::*;
-use nightshade::render::wgpu::passes;
-use nightshade::render::wgpu::rendergraph::RenderGraph;
-use nightshade::run::RenderResources;
 use std::path::PathBuf;
 
 const DEFAULT_HDR_BYTES: &[u8] = include_bytes!("../assets/sky/moonrise.hdr");
@@ -108,6 +106,9 @@ struct ViewerState {
     sun_entity: Option<Entity>,
     #[cfg(not(target_arch = "wasm32"))]
     asset_library: AssetLibrary,
+    hint_text_entity: Option<Entity>,
+    hint_hide_time: u64,
+    r_was_pressed: bool,
 }
 
 impl Default for ViewerState {
@@ -130,6 +131,9 @@ impl Default for ViewerState {
             sun_entity: None,
             #[cfg(not(target_arch = "wasm32"))]
             asset_library: AssetLibrary::default(),
+            hint_text_entity: None,
+            hint_hide_time: 0,
+            r_was_pressed: false,
         }
     }
 }
@@ -139,62 +143,11 @@ impl State for ViewerState {
         "glTF Viewer"
     }
 
-    fn configure_render_graph(
-        &mut self,
-        graph: &mut RenderGraph<World>,
-        device: &wgpu::Device,
-        surface_format: wgpu::TextureFormat,
-        resources: RenderResources,
-    ) {
-        let (width, height) = (1920, 1080);
-        let bloom_width = width / 2;
-        let bloom_height = height / 2;
-
-        let bloom_texture = graph
-            .add_color_texture("bloom")
-            .format(wgpu::TextureFormat::Rgba16Float)
-            .size(bloom_width, bloom_height)
-            .clear_color(wgpu::Color::BLACK)
-            .transient();
-
-        let bloom_pass = passes::BloomPass::new(device, width, height);
-        graph
-            .pass(Box::new(bloom_pass))
-            .read("hdr", resources.scene_color)
-            .write("bloom", bloom_texture);
-
-        let ssao_pass = passes::SsaoPass::new(device);
-        graph
-            .pass(Box::new(ssao_pass))
-            .read("depth", resources.depth)
-            .read("view_normals", resources.view_normals)
-            .write("ssao_raw", resources.ssao_raw);
-
-        let ssao_blur_pass = passes::SsaoBlurPass::new(device);
-        graph
-            .pass(Box::new(ssao_blur_pass))
-            .read("ssao_raw", resources.ssao_raw)
-            .write("ssao", resources.ssao);
-
-        let postprocess_pass = passes::PostProcessPass::new(device, surface_format, 0.08);
-        graph
-            .pass(Box::new(postprocess_pass))
-            .read("hdr", resources.scene_color)
-            .read("bloom", bloom_texture)
-            .read("ssao", resources.ssao)
-            .write("output", resources.swapchain);
-    }
-
     fn initialize(&mut self, world: &mut World) {
         world.resources.user_interface.enabled = true;
         world.resources.graphics.show_grid = false;
         world.resources.graphics.atmosphere = Atmosphere::Hdr;
         world.resources.graphics.use_fullscreen = false;
-        world.resources.graphics.bloom_intensity = 0.08;
-        world.resources.graphics.ssao_enabled = true;
-        world.resources.graphics.ssao_radius = 0.5;
-        world.resources.graphics.ssao_bias = 0.025;
-        world.resources.graphics.ssao_intensity = 1.5;
 
         load_hdr_skybox(world, DEFAULT_HDR_BYTES.to_vec());
 
@@ -209,7 +162,7 @@ impl State for ViewerState {
         let camera_entity = spawn_pan_orbit_camera(
             world,
             Vec3::new(0.0, 0.0, 0.0),
-            5.0,
+            3.0,
             0.0,
             0.3,
             "Main Camera".to_string(),
@@ -219,6 +172,21 @@ impl State for ViewerState {
         world.resources.active_camera = Some(camera_entity);
 
         self.load_gltf_from_bytes(world, DEFAULT_GLTF_BYTES);
+
+        let hint_properties = TextProperties {
+            font_size: 20.0,
+            color: Vec4::new(1.0, 1.0, 1.0, 0.7),
+            ..Default::default()
+        };
+        let hint_entity = spawn_hud_text_with_properties(
+            world,
+            "R: reset camera",
+            HudAnchor::BottomCenter,
+            Vec2::new(0.0, 40.0),
+            hint_properties,
+        );
+        self.hint_text_entity = Some(hint_entity);
+        self.hint_hide_time = 5000;
     }
 
     fn run_systems(&mut self, world: &mut World) {
@@ -227,6 +195,8 @@ impl State for ViewerState {
         self.atmosphere_switch_system(world);
         #[cfg(not(target_arch = "wasm32"))]
         self.asset_cycle_system(world);
+        self.hint_hide_system(world);
+        self.keyboard_shortcuts_system(world);
 
         if self.loaded && self.rotation_speed > 0.0 {
             for entity in &self.model_entities {
@@ -480,48 +450,6 @@ impl State for ViewerState {
 
                 self.animation_ui(world, ui);
 
-                ui.collapsing("Post Processing", |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Bloom:");
-                        ui.checkbox(&mut world.resources.graphics.bloom_enabled, "Enabled");
-                    });
-
-                    if world.resources.graphics.bloom_enabled {
-                        ui.add(
-                            egui::Slider::new(
-                                &mut world.resources.graphics.bloom_intensity,
-                                0.0..=0.1,
-                            )
-                            .step_by(0.01)
-                            .fixed_decimals(2)
-                            .text("Intensity"),
-                        );
-                    }
-
-                    ui.horizontal(|ui| {
-                        ui.label("SSAO:");
-                        ui.checkbox(&mut world.resources.graphics.ssao_enabled, "Enabled");
-                    });
-
-                    if world.resources.graphics.ssao_enabled {
-                        ui.add(
-                            egui::Slider::new(&mut world.resources.graphics.ssao_radius, 0.1..=2.0)
-                                .text("Radius"),
-                        );
-                        ui.add(
-                            egui::Slider::new(&mut world.resources.graphics.ssao_bias, 0.001..=0.1)
-                                .text("Bias"),
-                        );
-                        ui.add(
-                            egui::Slider::new(
-                                &mut world.resources.graphics.ssao_intensity,
-                                0.5..=3.0,
-                            )
-                            .text("Intensity"),
-                        );
-                    }
-                });
-
                 ui.collapsing("Debug", |ui| {
                     ui.horizontal(|ui| {
                         ui.label("PBR Debug:");
@@ -736,6 +664,35 @@ impl ViewerState {
             }
             self.previous_atmosphere = current_atmosphere;
         }
+    }
+
+    fn hint_hide_system(&mut self, world: &mut World) {
+        let uptime = world.resources.window.timing.uptime_milliseconds;
+
+        if let Some(hint_entity) = self.hint_text_entity
+            && uptime > self.hint_hide_time
+        {
+            world.despawn_entities(&[hint_entity]);
+            self.hint_text_entity = None;
+        }
+    }
+
+    fn keyboard_shortcuts_system(&mut self, world: &mut World) {
+        let r_pressed = world.resources.input.keyboard.is_key_pressed(KeyCode::KeyR);
+
+        if let Some(gui_state) = &world.resources.user_interface.state
+            && gui_state.egui_ctx().wants_keyboard_input()
+        {
+            self.r_was_pressed = r_pressed;
+            return;
+        }
+
+        if r_pressed && !self.r_was_pressed {
+            self.reset_camera(world);
+            world.resources.user_interface.enabled = true;
+        }
+
+        self.r_was_pressed = r_pressed;
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1023,7 +980,7 @@ impl ViewerState {
             && let Some(pan_orbit) = world.get_pan_orbit_camera_mut(camera_entity)
         {
             pan_orbit.target_focus = Vec3::new(0.0, 0.0, 0.0);
-            pan_orbit.target_radius = 5.0;
+            pan_orbit.target_radius = 3.0;
             pan_orbit.target_yaw = 0.0;
             pan_orbit.target_pitch = 0.3;
         }
