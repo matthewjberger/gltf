@@ -2,6 +2,8 @@
 
 A physically-based rendering (PBR) viewer for glTF 2.0 models built with the [Nightshade](https://github.com/matthewjberger/nightshade) game engine.
 
+<img width="1280" height="1392" alt="Screenshot 2026-01-17 204147" src="https://github.com/user-attachments/assets/d34af6d4-cc2e-4012-9e97-cf512ef1ce75" />
+
 ## Features
 
 - **glTF 2.0 Support**: Load and view `.gltf` and `.glb` files
