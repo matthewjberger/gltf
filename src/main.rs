@@ -52,6 +52,7 @@ impl AssetType {
 struct AssetEntry {
     path: PathBuf,
     name: String,
+    extension: String,
     asset_type: AssetType,
     tags: Vec<String>,
     categories: Vec<String>,
@@ -62,6 +63,10 @@ struct AssetLibrary {
     entries: Vec<AssetEntry>,
     search_query: String,
     filter_type: Option<AssetType>,
+    show_glb: bool,
+    show_gltf: bool,
+    show_fbx: bool,
+    show_hdr: bool,
     sort_ascending: bool,
     show_window: bool,
     selected_index: Option<usize>,
@@ -74,6 +79,10 @@ impl Default for AssetLibrary {
             entries: Vec::new(),
             search_query: String::new(),
             filter_type: None,
+            show_glb: true,
+            show_gltf: true,
+            show_fbx: true,
+            show_hdr: true,
             sort_ascending: true,
             show_window: false,
             selected_index: None,
@@ -243,7 +252,7 @@ impl State for ViewerState {
             }
             #[cfg(not(target_arch = "wasm32"))]
             if ext == "fbx" {
-                self.load_fbx_animations(world, path);
+                self.load_fbx(world, path);
             }
         }
         self.drag_file_type = None;
@@ -300,9 +309,19 @@ impl State for ViewerState {
             .show(ui_context, |ui| {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
-                    if ui.button("Asset Library").clicked() {
-                        self.asset_library.show_window = true;
-                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Asset Library").clicked() {
+                            self.asset_library.show_window = true;
+                        }
+
+                        if ui
+                            .button("Take Screenshot")
+                            .on_hover_text("Save screenshot to screenshots/ folder")
+                            .clicked()
+                        {
+                            nightshade::ecs::world::capture_screenshot(world);
+                        }
+                    });
                     ui.separator();
                 }
 
@@ -678,9 +697,7 @@ impl ViewerState {
             player.play(index);
         }
 
-        if clear_animations
-            && let Some(player) = world.get_animation_player_mut(entity)
-        {
+        if clear_animations && let Some(player) = world.get_animation_player_mut(entity) {
             player.clips.clear();
             player.current_clip = None;
             player.playing = false;
@@ -772,7 +789,7 @@ impl ViewerState {
 
             match asset_type {
                 AssetType::Model => self.load_gltf_from_path(world, &path),
-                AssetType::Animation => self.load_fbx_animations(world, &path),
+                AssetType::Animation => self.load_fbx(world, &path),
                 AssetType::Skybox => self.load_hdr_skybox(world, &path),
             }
         }
@@ -810,7 +827,10 @@ impl ViewerState {
             .unwrap_or("Custom HDR")
             .to_string();
 
-        let already_exists = self.custom_skyboxes.iter().position(|s| s.name == file_name);
+        let already_exists = self
+            .custom_skyboxes
+            .iter()
+            .position(|s| s.name == file_name);
 
         load_hdr_skybox(world, data.to_vec());
         world.resources.graphics.atmosphere = Atmosphere::Hdr;
@@ -850,32 +870,64 @@ impl ViewerState {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn load_fbx_animations(&mut self, world: &mut World, path: &std::path::Path) {
-        let Some(entity) = self.model_entities.first().copied() else {
-            tracing::warn!("No model loaded - load a glTF model first before adding FBX animations");
-            return;
-        };
-
-        if !world.entity_has_animation_player(entity) {
-            tracing::warn!("Model does not have an AnimationPlayer component");
-            return;
-        }
-
+    fn load_fbx(&mut self, world: &mut World, path: &std::path::Path) {
         match nightshade::ecs::prefab::import_fbx_from_path(path) {
             Ok(result) => {
-                if result.animations.is_empty() {
-                    tracing::warn!("No animations found in FBX file");
-                    return;
-                }
+                let has_meshes = !result.prefabs.is_empty() || !result.meshes.is_empty();
 
-                if let Some(player) = world.get_animation_player_mut(entity) {
-                    let count = result.animations.len();
-                    player.add_clips(result.animations);
-                    tracing::info!("Added {} animation(s) from FBX", count);
+                if has_meshes {
+                    self.clear_scene(world);
 
-                    if player.current_clip.is_none() && !player.clips.is_empty() {
-                        player.play(0);
+                    for (name, (rgba_data, width, height)) in result.textures {
+                        world.queue_command(WorldCommand::LoadTexture {
+                            name,
+                            rgba_data,
+                            width,
+                            height,
+                        });
                     }
+
+                    for (name, mesh) in result.meshes {
+                        mesh_cache_insert(&mut world.resources.mesh_cache, name, mesh);
+                    }
+
+                    for prefab in result.prefabs {
+                        let entity = nightshade::ecs::prefab::spawn_prefab_with_skins(
+                            world,
+                            &prefab,
+                            &result.animations,
+                            &result.skins,
+                            nalgebra_glm::vec3(0.0, 0.0, 0.0),
+                        );
+                        self.model_entities.push(entity);
+                    }
+
+                    self.loaded = true;
+                    self.center_and_fit_model(world);
+                } else if !result.animations.is_empty() {
+                    let Some(entity) = self.model_entities.first().copied() else {
+                        tracing::warn!(
+                            "No model loaded - load a model first before adding FBX animations"
+                        );
+                        return;
+                    };
+
+                    if !world.entity_has_animation_player(entity) {
+                        tracing::warn!("Model does not have an AnimationPlayer component");
+                        return;
+                    }
+
+                    if let Some(player) = world.get_animation_player_mut(entity) {
+                        let count = result.animations.len();
+                        player.add_clips(result.animations);
+                        tracing::info!("Added {} animation(s) from FBX", count);
+
+                        if player.current_clip.is_none() && !player.clips.is_empty() {
+                            player.play(0);
+                        }
+                    }
+                } else {
+                    tracing::warn!("FBX file contains no meshes or animations");
                 }
             }
             Err(error) => {
@@ -981,9 +1033,6 @@ impl ViewerState {
     fn scan_directory(&mut self, path: &std::path::Path) {
         self.asset_library.entries.clear();
 
-        let mut dir_best_file: std::collections::HashMap<PathBuf, (PathBuf, u8)> =
-            std::collections::HashMap::new();
-
         for entry in walkdir::WalkDir::new(path)
             .follow_links(true)
             .into_iter()
@@ -999,72 +1048,27 @@ impl ViewerState {
                 None => continue,
             };
 
-            if AssetType::from_extension(&extension).is_none() {
-                continue;
-            }
-
-            let priority = match extension.as_str() {
-                "glb" => 3,
-                "gltf" => 2,
-                "fbx" => 1,
-                "hdr" => 3,
-                _ => 0,
+            let asset_type = match AssetType::from_extension(&extension) {
+                Some(t) => t,
+                None => continue,
             };
 
-            let parent = entry_path.parent().unwrap_or(path).to_path_buf();
-            let dominated_extension = matches!(extension.as_str(), "glb" | "gltf" | "fbx");
-
-            if dominated_extension {
-                match dir_best_file.get(&parent) {
-                    Some((_, existing_priority)) if *existing_priority >= priority => {}
-                    _ => {
-                        dir_best_file.insert(parent, (entry_path.to_path_buf(), priority));
-                    }
-                }
-            } else {
-                let name = entry_path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("Unknown")
-                    .to_string();
-
-                let asset_type = AssetType::from_extension(&extension).unwrap();
-                let (display_name, tags, categories) = self
-                    .parse_polyhaven_info(entry_path)
-                    .unwrap_or_else(|| (name.clone(), Vec::new(), Vec::new()));
-
-                self.asset_library.entries.push(AssetEntry {
-                    path: entry_path.to_path_buf(),
-                    name: display_name,
-                    asset_type,
-                    tags,
-                    categories,
-                });
-            }
-        }
-
-        for (_, (file_path, _)) in dir_best_file {
-            let extension = file_path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-
-            let asset_type = AssetType::from_extension(&extension).unwrap();
-
-            let name = file_path
+            let file_stem = entry_path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("Unknown")
                 .to_string();
 
-            let (display_name, tags, categories) = self
-                .parse_polyhaven_info(&file_path)
-                .unwrap_or_else(|| (name.clone(), Vec::new(), Vec::new()));
+            let (base_name, tags, categories) = self
+                .parse_polyhaven_info(entry_path)
+                .unwrap_or_else(|| (file_stem, Vec::new(), Vec::new()));
+
+            let display_name = format!("{}.{}", base_name, extension);
 
             self.asset_library.entries.push(AssetEntry {
-                path: file_path,
+                path: entry_path.to_path_buf(),
                 name: display_name,
+                extension: extension.clone(),
                 asset_type,
                 tags,
                 categories,
@@ -1180,7 +1184,9 @@ impl ViewerState {
                             {
                                 self.asset_library.filter_type = None;
                             }
-                            for asset_type in [AssetType::Model, AssetType::Animation, AssetType::Skybox] {
+                            for asset_type in
+                                [AssetType::Model, AssetType::Animation, AssetType::Skybox]
+                            {
                                 if ui
                                     .selectable_label(
                                         self.asset_library.filter_type == Some(asset_type),
@@ -1203,15 +1209,25 @@ impl ViewerState {
                     {
                         self.asset_library.sort_ascending = !self.asset_library.sort_ascending;
                         if self.asset_library.sort_ascending {
-                            self.asset_library.entries.sort_by(|a, b| {
-                                a.name.to_lowercase().cmp(&b.name.to_lowercase())
-                            });
+                            self.asset_library
+                                .entries
+                                .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
                         } else {
-                            self.asset_library.entries.sort_by(|a, b| {
-                                b.name.to_lowercase().cmp(&a.name.to_lowercase())
-                            });
+                            self.asset_library
+                                .entries
+                                .sort_by(|a, b| b.name.to_lowercase().cmp(&a.name.to_lowercase()));
                         }
                     }
+                });
+
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    ui.label("Show:");
+                    ui.checkbox(&mut self.asset_library.show_glb, "glb");
+                    ui.checkbox(&mut self.asset_library.show_gltf, "gltf");
+                    ui.checkbox(&mut self.asset_library.show_fbx, "fbx");
+                    ui.checkbox(&mut self.asset_library.show_hdr, "hdr");
                 });
 
                 ui.separator();
@@ -1220,6 +1236,17 @@ impl ViewerState {
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for entry in &self.asset_library.entries {
+                        let show_ext = match entry.extension.as_str() {
+                            "glb" => self.asset_library.show_glb,
+                            "gltf" => self.asset_library.show_gltf,
+                            "fbx" => self.asset_library.show_fbx,
+                            "hdr" => self.asset_library.show_hdr,
+                            _ => true,
+                        };
+                        if !show_ext {
+                            continue;
+                        }
+
                         if let Some(filter) = self.asset_library.filter_type
                             && entry.asset_type != filter
                         {
@@ -1260,7 +1287,10 @@ impl ViewerState {
                         if !entry.tags.is_empty() || !entry.categories.is_empty() {
                             ui.indent(entry.path.to_string_lossy(), |ui| {
                                 if !entry.categories.is_empty() {
-                                    ui.label(format!("Categories: {}", entry.categories.join(", ")));
+                                    ui.label(format!(
+                                        "Categories: {}",
+                                        entry.categories.join(", ")
+                                    ));
                                 }
                                 if !entry.tags.is_empty() {
                                     ui.label(format!("Tags: {}", entry.tags.join(", ")));
@@ -1282,7 +1312,7 @@ impl ViewerState {
         if let Some((path, asset_type)) = asset_to_load {
             match asset_type {
                 AssetType::Model => self.load_gltf_from_path(world, &path),
-                AssetType::Animation => self.load_fbx_animations(world, &path),
+                AssetType::Animation => self.load_fbx(world, &path),
                 AssetType::Skybox => self.load_hdr_skybox(world, &path),
             }
         }
@@ -1308,11 +1338,13 @@ fn calculate_bounds_recursive(
 
     let global_matrix = parent_transform * local_matrix;
 
-    if world.get_render_mesh(entity).is_some() {
-        let position =
-            nalgebra_glm::vec4_to_vec3(&(global_matrix * nalgebra_glm::vec4(0.0, 0.0, 0.0, 1.0)));
-        *min = nalgebra_glm::min2(min, &position);
-        *max = nalgebra_glm::max2(max, &position);
+    if let Some(bounding_volume) = world.get_bounding_volume(entity) {
+        let transformed_obb = bounding_volume.obb.transform(&global_matrix);
+        let corners = transformed_obb.get_corners();
+        for corner in &corners {
+            *min = nalgebra_glm::min2(min, corner);
+            *max = nalgebra_glm::max2(max, corner);
+        }
         *has_bounds = true;
     }
 
